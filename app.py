@@ -9,6 +9,21 @@ import tempfile
 import streamlit as st
 import pandas as pd
 
+# ── Encoding-safe CSV reader ──────────────────────────────────────────────────
+def read_csv_safe(path_or_buf) -> pd.DataFrame:
+    """Try common encodings so non-UTF-8 files (latin-1, cp1252, etc.) load fine."""
+    for enc in ("utf-8", "latin-1", "cp1252"):
+        try:
+            if hasattr(path_or_buf, "seek"):
+                path_or_buf.seek(0)
+            return pd.read_csv(path_or_buf, encoding=enc)
+        except (UnicodeDecodeError, Exception):
+            continue
+    # Last resort: replace bad bytes silently
+    if hasattr(path_or_buf, "seek"):
+        path_or_buf.seek(0)
+    return pd.read_csv(path_or_buf, encoding="utf-8", encoding_errors="replace")
+
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="DataClean AI",
@@ -196,7 +211,7 @@ with left:
     )
 
     if uploaded:
-        preview_df = pd.read_csv(uploaded)
+        preview_df = read_csv_safe(uploaded)
         uploaded.seek(0)
 
         st.markdown(f"""
@@ -334,7 +349,7 @@ with right:
 
         with tab3:
             if cleaned_csv_path and os.path.exists(cleaned_csv_path):
-                cleaned_df = pd.read_csv(cleaned_csv_path)
+                cleaned_df = read_csv_safe(cleaned_csv_path)
 
                 # Stats row
                 orig_shape = preview_df.shape

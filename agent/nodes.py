@@ -20,18 +20,39 @@ def reset_retries():
 
 # ── Node 1 ────────────────────────────────────────────────────────────────────
 def inspect_dataset(state: Input) -> Inspect:
-    df = pd.read_csv(state.raw_csv_path)
+    for enc in ("utf-8", "latin-1", "cp1252"):
+        try:
+            df = pd.read_csv(state.raw_csv_path, encoding=enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        df = pd.read_csv(state.raw_csv_path, encoding="utf-8", encoding_errors="replace")
 
     shape = df.shape
     dtypes = df.dtypes.astype(str).to_dict()
     missing_pct = (df.isnull().mean() * 100).round(2).to_dict()
     basic_stats = df.describe(include="all").round(4).to_dict()
 
+    # ── Detect type mismatches: object cols whose values are mostly numeric ──
+    type_mismatches = {}
+    for col in df.select_dtypes(include="object").columns:
+        coerced = pd.to_numeric(df[col], errors="coerce")
+        non_null = df[col].notna().sum()
+        numeric_ratio = coerced.notna().sum() / non_null if non_null > 0 else 0
+        if numeric_ratio >= 0.5:          # majority of values parse as numbers
+            target_type = "int" if coerced.dropna().apply(float.is_integer).all() else "float"
+            type_mismatches[col] = {
+                "numeric_ratio": round(numeric_ratio * 100, 1),
+                "suggested_dtype": target_type,
+            }
+
     data_profile = {
         "shape": shape,
         "dtypes": dtypes,
         "missing_pct": missing_pct,
         "basic_stats": basic_stats,
+        "type_mismatches": type_mismatches,
     }
 
     lines = []
@@ -39,6 +60,14 @@ def inspect_dataset(state: Input) -> Inspect:
     lines.append("Column Types & Missing %:")
     for col in df.columns:
         lines.append(f"  - {col}: dtype={dtypes[col]}, missing={missing_pct[col]}%")
+
+    if type_mismatches:
+        lines.append("\n⚠️  TYPE MISMATCHES DETECTED (object columns that should be numeric):")
+        for col, info in type_mismatches.items():
+            lines.append(
+                f"  - {col}: stored as object but {info['numeric_ratio']}% of values "
+                f"are numeric → should be {info['suggested_dtype']}"
+            )
 
     lines.append("\nBasic Statistics:")
     for col, stats in basic_stats.items():
@@ -62,9 +91,14 @@ def plan_cleaning(state: Inspect) -> Plan:
 Dataset Profile:
 {profile_text}
 
-For each column with issues, explain:
-- What the problem is
-- What strategy to use and why (e.g., median imputation, drop, forward-fill, encode)
+For EVERY column, address all of the following issues if present:
+1. Missing values — choose median/mode/forward-fill/drop based on column type and missingness rate.
+2. Dtype mismatches — if a column is labeled as an "⚠️ TYPE MISMATCH", it must be coerced to the suggested numeric type using pd.to_numeric().
+3. Duplicate rows — check and drop if present.
+4. Inconsistent categories — standardize casing and whitespace in categorical columns.
+5. Outliers — flag and treat extreme values where appropriate.
+
+IMPORTANT: Dtype coercion must happen BEFORE missing value imputation, because string-valued numeric columns (e.g. "475") cannot be median-imputed until they are converted to numbers first.
 
 Return your plan as plain text only. Do NOT wrap it in JSON or code blocks.
 """
@@ -85,6 +119,11 @@ Requirements:
 - Save the cleaned dataframe to `output_csv_path` (already defined) using df.to_csv(output_csv_path, index=False).
 - Do NOT include any import statements — pandas is already imported as pd.
 - Do NOT wrap in a function. Write flat, executable code.
+- DTYPE COERCION IS MANDATORY: For every column that should be numeric but is stored as object/string,
+  use `pd.to_numeric(df[col], errors='coerce')` to convert it BEFORE doing any imputation.
+  This handles quoted numbers like "475" or mixed-type columns.
+  After converting, cast integer columns with `df[col] = df[col].astype('Int64')` (nullable integer).
+- Perform dtype coercion as the very first step, before any missing value filling.
 
 Return ONLY the Python code inside a ```python ... ``` code block. Nothing else.
 """
@@ -160,7 +199,15 @@ def feature_engineering_plan(state: ExecuteCode) -> FeatureEngineering:
     Runs after execute_code() succeeds.
     Reads the cleaned CSV and asks the LLM to suggest feature engineering steps.
     """
-    df = pd.read_csv(state.cleaned_csv_path)
+    # Try multiple encodings in case the CSV uses a non-UTF-8 encoding
+    for enc in ("utf-8", "latin-1", "cp1252"):
+        try:
+            df = pd.read_csv(state.cleaned_csv_path, encoding=enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        df = pd.read_csv(state.cleaned_csv_path, encoding="utf-8", encoding_errors="replace")
 
     shape = df.shape
     dtypes = df.dtypes.astype(str).to_dict()
