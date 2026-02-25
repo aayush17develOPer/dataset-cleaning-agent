@@ -1,4 +1,8 @@
 from pydantic import BaseModel
+from typing import Optional
+
+class Input(BaseModel):
+    raw_csv_path: str
 
 class Inspect(BaseModel):
     # Input state: raw_csv_path: str
@@ -18,8 +22,8 @@ class GenerateCode(BaseModel):
 class ExecuteCode(BaseModel):
     # Input state: generated_code: str
     # Output state: 
-    error: str
-    cleaned_csv_path: str
+    error: Optional[str] = None      # None = success, str = traceback
+    cleaned_csv_path: Optional[str] = None
 
 class FeatureEngineering(BaseModel):
     # Input state: cleaned_csv_path: str
